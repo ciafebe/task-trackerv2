@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Polytron Progress Tracker</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#f0f4ff}
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-track{background:#f0f4ff}
+  ::-webkit-scrollbar-thumb{background:#c7d0f8;border-radius:99px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────
+const SHEET_ID = "1LEyuA1TcHo5ru-IIxj0tDdhXol9nTWUUkrLtUTPUQlY";
+const API_KEY  = "AIzaSyDP_kUbvvz7hz_d_Y2DJLc1wqW0TCf55ko";
+const TABS = ["SMART LEAD", "SMART BUILD"];
+
+async function fetchTab(tabName) {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(tabName)}?key=${API_KEY}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data.values || [];
+}
+
+// ── Parser ──────────────────────────────────────────────────────────────────
+const uid = () => Math.random().toString(36).slice(2,9);
+const today = () => new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});
+
+function parseTab(rows, tabName) {
+  if (!rows || rows.length < 2) return null;
+  const headers = rows[0];
+  const starCols   = headers.map((h,i)=>({h,i})).filter(({h})=>h&&h.toUpperCase().includes("TOTAL STAR"));
+  const improvCols = headers.map((h,i)=>({h,i})).filter(({h})=>h&&h.includes("IMPROVEMENT"));
+  const lastImprovIdx = improvCols.length > 0 ? improvCols[improvCols.length-1].i : -1;
+  const topicCols = headers.map((h,i)=>({h,i})).filter(({h,i})=>
+    i > lastImprovIdx && h && h.trim() !== "" &&
+    !h.includes("%") && !/^\d+\/\d+\/\d+/.test(h.trim()) &&
+    !h.toUpperCase().includes("TOTAL STAR") && !h.includes("IMPROVEMENT")
+  );
+  const topics = topicCols.map(({h})=>({id:uid(),label:h.toString().trim()}));
+  const dataRows = rows.slice(1).filter(r=>{
+    const name=(r[0]||"").toString().trim();
+    return name!==""&&!/^\d+\/\d+\/\d+/.test(name)&&!/expected/i.test(name)&&!/^\d+%$/.test(name);
+  });
+  const parsedRows = dataRows.map(r=>{
+    const name=(r[0]||"").toString().trim();
+    let latestStars="";
+    for(let i=starCols.length-1;i>=0;i--){
+      const val=(r[starCols[i].i]||"").toString().trim();
+      if(val!==""&&!isNaN(Number(val))){latestStars=val;break;}
+    }
+    let latestImprov="";
+    for(let i=improvCols.length-1;i>=0;i--){
+      const raw=(r[improvCols[i].i]||"").toString().trim();
+      const clean=raw.replace(/[^+\-\d]/g,"");
+      if(clean&&clean!=="+0"&&clean!=="0"&&clean!=="-0"){latestImprov=raw;break;}
+    }
+    const checks={};
+    topicCols.forEach(({i},j)=>{
+      const val=(r[i]||"").toString().trim().toLowerCase();
+      checks[topics[j].id]=val==="v"||val==="✓"||val==="true"||val==="yes"||val==="1";
+    });
+    return {id:uid(),name,stars:latestStars,improvement:latestImprov,checks};
+  });
+  return {
+    id:tabName, title:tabName, createdAt:today(), topics, rows:parsedRows,
+    latestWeek:starCols.length>0?starCols[starCols.length-1].h:"",
+  };
+}
+
+// ── Theme ───────────────────────────────────────────────────────────────────
+const T = {
+  light:{
+    bg:"#f0f4ff",sidebar:"#ffffff",card:"#ffffff",cardBorder:"#e8edf8",
+    text:"#1e2a4a",sub:"#6b7a99",accent:"#5b6ef5",accentSoft:"#eef0fe",
+    star:"#f59e0b",starBg:"#fffbeb",check:"#10b981",checkBg:"#ecfdf5",
+    danger:"#ef4444",shadow:"0 2px 16px rgba(91,110,245,0.08)",
+    inputBg:"#f7f9ff",rowHover:"#f7f9ff",topicBg:"#f3f5ff",topicBorder:"#c7d0f8",
+  },
+  dark:{
+    bg:"#0f1117",sidebar:"#1a1d2e",card:"#1e2235",cardBorder:"#2a2f4a",
+    text:"#e8ecf8",sub:"#8892b0",accent:"#7b8fff",accentSoft:"#1e2340",
+    star:"#fbbf24",starBg:"#2d2410",check:"#34d399",checkBg:"#0d2a1f",
+    danger:"#f87171",shadow:"0 2px 20px rgba(0,0,0,0.4)",
+    inputBg:"#151827",rowHover:"#1a2030",topicBg:"#1a1f35",topicBorder:"#3a4070",
+  },
+};
+
+// ── Btn ─────────────────────────────────────────────────────────────────────
+function Btn({children,onClick,accent,danger,disabled,style={}}) {
+  const [hov,setHov]=useState(false);
+  const bg=danger?(hov?"#ef4444":"transparent"):disabled?"#ccc":hov?(accent||"#5b6ef5")+"dd":(accent||"#5b6ef5");
+  const color=danger?(hov?"#fff":danger):"#fff";
+  const border=danger?`1.5px solid ${danger}`:"none";
+  return(
+    <button onClick={onClick} disabled={disabled}
+      onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+      style={{background:bg,color,border,borderRadius:10,padding:"6px 13px",cursor:disabled?"not-allowed":"pointer",fontSize:12,fontWeight:600,transition:"all .18s",whiteSpace:"nowrap",opacity:disabled?0.5:1,...style}}>
+      {children}
+    </button>
+  );
+}
+
+// ── Poster ──────────────────────────────────────────────────────────────────
+function PosterModal({table,onClose,dark}) {
+  const canvasRef=useRef(null);
+  const draw=useCallback(()=>{
+    const c=canvasRef.current; if(!c)return;
+    const ctx=c.getContext("2d");
+    const sorted=[...table.rows].sort((a,b)=>(Number(b.stars)||0)-(Number(a.stars)||0));
+    const rc=sorted.length,tc=table.topics.length;
+    const PAD=24,W=900,SH=110,TH=52,CHH=tc>0?70:44,RH=58,FH=56,TP=28,SG=14;
+    const TT=TP+SH+24,RT=TT+TH+CHH;
+    const H=RT+Math.max(rc,1)*RH+FH+32;
+    c.width=W;c.height=H;
+    const B="#0662c6",G="#1c912c",W2="#ffffff",BG="#f4f7fc";
+    const TD="#111827",TS="#374151",TSB="#9ca3af",GO="#f59e0b",GL="#fef9ec",BO="#e2e8f0";
+    const rr=(x,y,w,h,r,f,s)=>{
+      ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+      ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);
+      ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
+      if(f){ctx.fillStyle=f;ctx.fill();}if(s){ctx.strokeStyle=s.c;ctx.lineWidth=s.w||1;ctx.stroke();}
+    };
+    const sh=(b=12,col="rgba(0,0,0,0.07)")=>{ctx.shadowBlur=b;ctx.shadowColor=col;};
+    const ns=()=>{ctx.shadowBlur=0;ctx.shadowColor="transparent";};
+    const tr=(txt,mw,f)=>{ctx.font=f;if(!txt)return"—";if(ctx.measureText(txt).width<=mw)return txt;let t=txt;while(ctx.measureText(t+"…").width>mw&&t.length>0)t=t.slice(0,-1);return t+"…";};
+    const ci=(x,y,r,f,s)=>{ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);if(f){ctx.fillStyle=f;ctx.fill();}if(s){ctx.strokeStyle=s.c;ctx.lineWidth=s.w||2;ctx.stroke();}};
+    const ck=(cx,cy,sz,filled)=>{
+      if(filled){ci(cx,cy,sz,G);ctx.strokeStyle=W2;ctx.lineWidth=2.2;ctx.lineCap="round";ctx.lineJoin="round";ctx.beginPath();ctx.moveTo(cx-sz*.45,cy);ctx.lineTo(cx-sz*.1,cy+sz*.4);ctx.lineTo(cx+sz*.5,cy-sz*.4);ctx.stroke();}
+      else ci(cx,cy,sz,null,{c:BO,w:2});
+    };
+    ctx.fillStyle=BG;ctx.fillRect(0,0,W,H);
+    const tp2=sorted.find(r=>r.name&&Number(r.stars)>0);
+    const ts=sorted.reduce((s,r)=>s+(Number(r.stars)||0),0);
+    const tch=sorted.reduce((s,r)=>s+Object.values(r.checks||{}).filter(Boolean).length,0);
+    const mc=rc*tc,pd=mc>0?Math.round(tch/mc*100):0;
+    const stats=[
+      {icon:"★",iconBg:B,label:"Total Students",value:String(rc),sub:"Keep it up!"},
+      {icon:"↑",iconBg:G,label:"Total Stars",value:String(ts),sub:"Amazing progress!"},
+      {icon:"✓",iconBg:B,label:"Tasks Completed",value:`${pd}%`,sub:"Great consistency!"},
+      {icon:"🏆",iconBg:GO,label:"Top Performer",value:tp2?tr(tp2.name,110,"bold 18px system-ui"):"—",sub:"Keep shining!"},
+    ];
+    const SW=(W-PAD*2-(SG*3))/4;
+    stats.forEach((s,i)=>{
+      const sx=PAD+i*(SW+SG),sy=TP;
+      sh(14,"rgba(0,0,0,0.08)");rr(sx,sy,SW,SH,16,W2);ns();
+      ctx.strokeStyle=BO;ctx.lineWidth=1.2;rr(sx,sy,SW,SH,16);ctx.stroke();
+      sh(8,"rgba(0,0,0,0.15)");ci(sx+32,sy+32,20,s.iconBg);ns();
+      ctx.fillStyle=W2;ctx.font=s.icon.length>1?"16px system-ui":"bold 18px system-ui";ctx.textAlign="center";ctx.fillText(s.icon,sx+32,sy+39);ctx.textAlign="left";
+      ctx.font="bold 11px system-ui";ctx.fillStyle=i===1?G:B;ctx.fillText(s.label.toUpperCase(),sx+12,sy+66);
+      ctx.font="bold 22px system-ui";ctx.fillStyle=TD;ctx.fillText(s.value,sx+12,sy+87);
+      ctx.font="11px system-ui";ctx.fillStyle=TSB;ctx.fillText(s.sub,sx+12,sy+103);
+    });
+    sh(18,"rgba(0,0,0,0.07)");rr(PAD,TT,W-PAD*2,H-TT-28,18,W2);ns();
+    ctx.strokeStyle=BO;ctx.lineWidth=1;rr(PAD,TT,W-PAD*2,H-TT-28,18);ctx.stroke();
+    rr(PAD,TT,W-PAD*2,TH,18,B);ctx.fillStyle=B;ctx.fillRect(PAD,TT+TH-18,W-PAD*2,18);
+    sh(6,"rgba(0,0,0,0.2)");ci(PAD+30,TT+26,16,W2);ns();
+    ctx.fillStyle=GO;ctx.font="bold 16px system-ui";ctx.textAlign="center";ctx.fillText("★",PAD+30,TT+32);ctx.textAlign="left";
+    ctx.fillStyle=W2;ctx.font="bold 14px system-ui";ctx.fillText(`PROGRESS TRACKER — ${table.title}`,PAD+54,TT+30);
+    const lgx=W-PAD-230;ck(lgx+10,TT+26,10,true);ctx.fillStyle=TD;ctx.font="13px system-ui";ctx.fillText("Completed",lgx+24,TT+31);ck(lgx+120,TT+26,10,false);ctx.fillText("Not Yet",lgx+134,TT+31);
+    const NW=170,SW2=100,TAX=PAD+NW+SW2,TAW=W-PAD*2-NW-SW2;
+    const CW=tc>0?TAW/tc:0,CHY=TT+TH;
+    ctx.fillStyle=TS;ctx.font="bold 13px system-ui";ctx.fillText("👤  Name",PAD+16,CHY+28);
+    ctx.strokeStyle=BO;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(PAD+NW,CHY);ctx.lineTo(PAD+NW,CHY+CHH);ctx.stroke();
+    ctx.fillStyle=GO;ctx.font="bold 13px system-ui";ctx.textAlign="center";ctx.fillText("★",PAD+NW+16,CHY+20);ctx.textAlign="left";
+    ctx.fillStyle=TS;ctx.font="bold 12px system-ui";ctx.fillText("Stars",PAD+NW+28,CHY+20);ctx.fillText("(Latest)",PAD+NW+8,CHY+36);
+    ctx.strokeStyle=BO;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(PAD+NW+SW2,CHY);ctx.lineTo(PAD+NW+SW2,CHY+CHH);ctx.stroke();
+    if(tc>0){
+      ctx.fillStyle=G;ctx.font="bold 11px system-ui";ctx.textAlign="center";ctx.fillText("— CUSTOM TOPIC TASKS —",TAX+TAW/2,CHY+16);ctx.textAlign="left";
+      table.topics.forEach((tp,j)=>{
+        const tx=TAX+j*CW;
+        ctx.fillStyle="#1c912c";ctx.fillRect(tx,CHY+22,CW-(j<tc-1?1:0),CHH-22);
+        if(j<tc-1){ctx.fillStyle="rgba(255,255,255,0.3)";ctx.fillRect(tx+CW-1,CHY+22,1,CHH-22);}
+        ctx.fillStyle=W2;ctx.font="bold 10px system-ui";ctx.textAlign="center";
+        const words=tp.label.split(" ");const l1=words.slice(0,2).join(" "),l2=words.slice(2).join(" ");
+        ctx.fillText(tr(l1,CW-8,"bold 10px system-ui"),tx+CW/2,CHY+35);
+        if(l2)ctx.fillText(tr(l2,CW-8,"bold 10px system-ui"),tx+CW/2,CHY+50);
+        ctx.textAlign="left";
+      });
+    }
+    const AC=["#dbeafe","#dcfce7","#fef3c7","#fce7f3","#ede9fe"],AT=["#1d4ed8","#15803d","#92400e","#be185d","#6d28d9"];
+    sorted.forEach((row,i)=>{
+      const ry=RT+i*RH;
+      if(i%2===0){ctx.fillStyle="#f9fafb";ctx.fillRect(PAD+1,ry,W-PAD*2-2,RH);}
+      ctx.strokeStyle=BO;ctx.lineWidth=0.8;ctx.beginPath();ctx.moveTo(PAD,ry+RH);ctx.lineTo(W-PAD,ry+RH);ctx.stroke();
+      ci(PAD+26,ry+RH/2,18,AC[i%5]);ctx.fillStyle=AT[i%5];ctx.font="bold 13px system-ui";ctx.textAlign="center";ctx.fillText((row.name||"?")[0].toUpperCase(),PAD+26,ry+RH/2+5);ctx.textAlign="left";
+      ctx.fillStyle=TD;ctx.font="bold 13px system-ui";ctx.fillText(tr(row.name||"—",NW-62,"bold 13px system-ui"),PAD+50,ry+RH/2+5);
+      ctx.strokeStyle=BO;ctx.lineWidth=0.8;ctx.beginPath();ctx.moveTo(PAD+NW,ry);ctx.lineTo(PAD+NW,ry+RH);ctx.stroke();
+      const scx=PAD+NW+20,scy=ry+RH/2;
+      ci(scx,scy,14,GL);ctx.fillStyle=GO;ctx.font="bold 14px system-ui";ctx.textAlign="center";ctx.fillText("★",scx,scy+5);ctx.textAlign="left";
+      ctx.fillStyle=TD;ctx.font="bold 14px system-ui";ctx.fillText(row.stars||"—",PAD+NW+38,scy+6);
+      ctx.strokeStyle=BO;ctx.lineWidth=0.8;ctx.beginPath();ctx.moveTo(PAD+NW+SW2,ry);ctx.lineTo(PAD+NW+SW2,ry+RH);ctx.stroke();
+      table.topics.forEach((tp,j)=>{
+        const tx=TAX+j*CW,cx=tx+CW/2,cy=ry+RH/2;ck(cx,cy,13,!!row.checks?.[tp.id]);
+        if(j<tc-1){ctx.strokeStyle=BO;ctx.lineWidth=0.8;ctx.beginPath();ctx.moveTo(tx+CW,ry);ctx.lineTo(tx+CW,ry+RH);ctx.stroke();}
+      });
+    });
+    const fy=H-FH-4,fg=ctx.createLinearGradient(PAD,fy,W-PAD,fy);fg.addColorStop(0,B);fg.addColorStop(1,G);
+    ctx.save();rr(PAD,fy,W-PAD*2,FH+4,18);ctx.clip();ctx.fillStyle=fg;ctx.fillRect(PAD,fy,W-PAD*2,FH+4);ctx.restore();
+    ctx.save();ctx.globalAlpha=0.25;ctx.fillStyle=W2;ctx.fillRect(W/2-1,fy+12,2,FH-24);ctx.restore();
+    ctx.fillStyle=W2;ctx.font="bold 15px system-ui";ctx.fillText("Keep learning. Stay consistent.",PAD+20,fy+26);
+    ctx.font="12px system-ui";ctx.globalAlpha=0.8;ctx.fillText("Earn your stars and grow with Japi AI 🚀",PAD+20,fy+44);ctx.globalAlpha=1;
+    ctx.font="bold 14px system-ui";ctx.fillStyle=W2;ctx.textAlign="right";ctx.fillText("Polytron Learning Progress",W-PAD-20,fy+26);
+    ctx.font="11px system-ui";ctx.globalAlpha=0.75;ctx.fillText(`Generated ${today()}`,W-PAD-20,fy+44);ctx.textAlign="left";ctx.globalAlpha=1;
+  },[table,dark]);
+  useEffect(()=>{draw();},[draw]);
+  const t=T[dark?"dark":"light"];
+  const dl=()=>{const a=document.createElement("a");a.href=canvasRef.current.toDataURL("image/png");a.download=`${table.title.replace(/\s+/g,"_")}_poster.png`;a.click();};
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,padding:16}}>
+      <div style={{background:t.card,borderRadius:20,padding:24,maxWidth:860,width:"100%",boxShadow:"0 8px 40px rgba(0,0,0,0.5)",maxHeight:"90vh",overflowY:"auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <h3 style={{margin:0,color:t.text,fontWeight:700}}>🎨 Poster — {table.title}</h3>
+          <div style={{display:"flex",gap:8}}><Btn onClick={dl} accent={t.accent}>⬇ Download PNG</Btn><Btn onClick={onClose} danger={t.danger}>✕ Close</Btn></div>
+        </div>
+        <canvas ref={canvasRef} style={{width:"100%",borderRadius:14,display:"block"}}/>
+      </div>
+    </div>
+  );
+}
+
+// ── Table View ───────────────────────────────────────────────────────────────
+function TableView({table,dark}) {
+  const t=T[dark?"dark":"light"];
+  const [poster,setPoster]=useState(false);
+  const [searchQ,setSearchQ]=useState("");
+  const totalC=table.rows.reduce((s,r)=>s+Object.values(r.checks||{}).filter(Boolean).length,0);
+  const maxC=table.rows.length*table.topics.length;
+  const pct=maxC?Math.round(totalC/maxC*100):0;
+  const sorted=[...table.rows].sort((a,b)=>(Number(b.stars)||0)-(Number(a.stars)||0));
+  const filtered=sorted.filter(r=>r.name.toLowerCase().includes(searchQ.toLowerCase()));
+  const top3=sorted.filter(r=>r.name&&Number(r.stars)>0).slice(0,3);
+  const th={color:t.sub,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",padding:"8px 10px",whiteSpace:"nowrap"};
+  const td={padding:"7px 10px",verticalAlign:"middle"};
+  return(
+    <div style={{background:t.card,borderRadius:20,border:`1px solid ${t.cardBorder}`,boxShadow:t.shadow,marginBottom:24,overflow:"hidden"}}>
+      <div style={{background:`linear-gradient(135deg,${t.accent}22,${t.accent}06)`,padding:"18px 20px 14px",borderBottom:`1px solid ${t.cardBorder}`}}>
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+          <div>
+            <div style={{fontSize:18,fontWeight:800,color:t.text}}>{table.title}</div>
+            <div style={{fontSize:12,color:t.sub,marginTop:3}}>
+              {table.rows.length} participants · Latest: <strong>{table.latestWeek||"—"}</strong> · {table.topics.length} topics
+            </div>
+          </div>
+          <Btn onClick={()=>setPoster(true)} accent={t.accent}>🎨 Generate Poster</Btn>
+        </div>
+        <div style={{marginTop:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:t.sub,marginBottom:4}}>
+            <span>Topic completion</span><span style={{fontWeight:700,color:t.check}}>{pct}%</span>
+          </div>
+          <div style={{background:t.cardBorder,borderRadius:99,height:7,overflow:"hidden"}}>
+            <div style={{width:`${pct}%`,height:"100%",background:`linear-gradient(90deg,${t.check},${t.accent})`,borderRadius:99,transition:"width .4s"}}/>
+          </div>
+          <div style={{fontSize:11,color:t.sub,marginTop:4}}>{totalC}/{maxC} checks · {table.rows.length} participants</div>
+        </div>
+      </div>
+      <div style={{padding:"12px 18px 0",display:"flex",gap:8,alignItems:"center"}}>
+        <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="🔍 Search participant…"
+          style={{flex:1,maxWidth:280,background:t.inputBg,border:`1.5px solid ${t.cardBorder}`,borderRadius:10,padding:"7px 12px",color:t.text,fontSize:13,outline:"none"}}/>
+        <span style={{fontSize:12,color:t.sub}}>{filtered.length} shown</span>
+      </div>
+      <div style={{overflowX:"auto",padding:"10px 0 0"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}>
+          <thead>
+            <tr style={{borderBottom:`1px solid ${t.cardBorder}`}}>
+              <th style={{...th,width:32,textAlign:"center"}}>#</th>
+              <th style={{...th,minWidth:160}}>Name</th>
+              <th style={{...th,textAlign:"center",minWidth:90}}>⭐ Stars</th>
+              <th style={{...th,textAlign:"center",minWidth:90}}>📈 Improvement</th>
+              {table.topics.length>0&&(
+                <th colSpan={table.topics.length} style={{...th,textAlign:"center",background:t.topicBg,borderLeft:`2px solid ${t.topicBorder}`,borderRight:`2px solid ${t.topicBorder}`}}>
+                  📝 Custom Topic Tasks
+                </th>
+              )}
+            </tr>
+            {table.topics.length>0&&(
+              <tr style={{borderBottom:`2px solid ${t.topicBorder}`}}>
+                <th colSpan={4}/>
+                {table.topics.map((tp,i)=>(
+                  <th key={tp.id} style={{...th,background:t.topicBg,textAlign:"center",minWidth:100,fontSize:10,
+                    borderLeft:i===0?`2px solid ${t.topicBorder}`:`1px solid ${t.cardBorder}`,
+                    borderRight:i===table.topics.length-1?`2px solid ${t.topicBorder}`:"none",padding:"6px 8px"}}>
+                    {tp.label}
+                  </th>
+                ))}
+              </tr>
+            )}
+          </thead>
+          <tbody>
+            {filtered.length===0&&(
+              <tr><td colSpan={4+table.topics.length} style={{textAlign:"center",padding:32,color:t.sub,fontSize:13}}>
+                {searchQ?"No results.":"No data loaded."}
+              </td></tr>
+            )}
+            {filtered.map((row,i)=>(
+              <tr key={row.id} style={{borderBottom:`1px solid ${t.cardBorder}`,transition:"background .15s"}}
+                onMouseEnter={e=>e.currentTarget.style.background=t.rowHover}
+                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                <td style={{...td,color:t.sub,fontSize:12,textAlign:"center"}}>{i+1}</td>
+                <td style={td}><div style={{fontWeight:600,fontSize:14,color:t.text}}>{row.name}</div></td>
+                <td style={{...td,textAlign:"center"}}>
+                  <span style={{background:t.starBg,color:t.star,fontWeight:700,fontSize:13,borderRadius:8,padding:"3px 10px"}}>{row.stars||"—"}</span>
+                </td>
+                <td style={{...td,textAlign:"center"}}>
+                  {row.improvement&&row.improvement!=="+0"
+                    ?<span style={{background:t.checkBg,color:t.check,fontWeight:700,fontSize:12,borderRadius:8,padding:"3px 8px"}}>{row.improvement}</span>
+                    :<span style={{color:t.sub,fontSize:12}}>—</span>}
+                </td>
+                {table.topics.map((tp,j)=>(
+                  <td key={tp.id} style={{...td,textAlign:"center",
+                    background:j%2===0?t.topicBg+"88":"transparent",
+                    borderLeft:j===0?`2px solid ${t.topicBorder}`:`1px solid ${t.cardBorder}`,
+                    borderRight:j===table.topics.length-1?`2px solid ${t.topicBorder}`:"none"}}>
+                    <span style={{fontSize:18}}>{row.checks?.[tp.id]?"✅":"⬜"}</span>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {top3.length>0&&(
+        <div style={{background:t.accentSoft,margin:"10px 18px 16px",borderRadius:12,padding:"9px 14px",fontSize:13,color:t.accent,fontWeight:600}}>
+          🏆 {top3.map((r,i)=>`${["🥇","🥈","🥉"][i]} ${r.name} (${r.stars} ⭐)`).join("  ·  ")}
+        </div>
+      )}
+      {poster&&<PosterModal table={table} onClose={()=>setPoster(false)} dark={dark}/>}
+    </div>
+  );
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [dark,setDark]=useState(false);
+  const [tables,setTables]=useState({});
+  const [loading,setLoading]=useState(true);
+  const [lastSync,setLastSync]=useState(null);
+  const [errors,setErrors]=useState({});
+  const [activeTab,setActiveTab]=useState(TABS[0]);
+  const t=T[dark?"dark":"light"];
+
+  const loadAll=useCallback(async()=>{
+    setLoading(true);setErrors({});
+    const results={},errs={};
+    await Promise.all(TABS.map(async name=>{
+      try{
+        const url=`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(name)}?key=${API_KEY}`;
+        const res=await fetch(url);
+        if(!res.ok)throw new Error(`HTTP ${res.status}`);
+        const json=await res.json();
+        const parsed=parseTab(json.values||[],name);
+        if(parsed)results[name]=parsed;
+        else errs[name]="Could not parse";
+      }catch(e){errs[name]=e.message;}
+    }));
+    setTables(results);setErrors(errs);
+    setLastSync(new Date().toLocaleTimeString());
+    setLoading(false);
+  },[]);
+
+  useEffect(()=>{loadAll();},[loadAll]);
+
+  const totalP=Object.values(tables).reduce((s,tb)=>s+(tb?.rows?.length||0),0);
+  const totalC=Object.values(tables).reduce((s,tb)=>s+(tb?.rows?.reduce((ss,r)=>ss+Object.values(r.checks||{}).filter(Boolean).length,0)||0),0);
+  const activeTable=tables[activeTab];
+
+  return(
+    <div style={{minHeight:"100vh",background:t.bg,fontFamily:"'Segoe UI',system-ui,sans-serif",transition:"background .3s"}}>
+      <div style={{background:t.sidebar,borderBottom:`1px solid ${t.cardBorder}`,padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:60,boxShadow:t.shadow,position:"sticky",top:0,zIndex:100,gap:8,flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:22}}>📊</span>
+          <span style={{fontWeight:800,fontSize:17,color:t.text}}>Polytron Progress</span>
+          <span style={{fontSize:11,background:"#dcfce7",color:"#15803d",borderRadius:6,padding:"2px 8px",fontWeight:700}}>● Live</span>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          {loading&&<span style={{fontSize:11,color:t.sub}}>⏳ Loading…</span>}
+          {!loading&&lastSync&&Object.keys(errors).length===0&&<span style={{fontSize:11,color:"#10b981",fontWeight:600}}>✓ Synced {lastSync}</span>}
+          {!loading&&Object.entries(errors).map(([k,v])=>(
+            <span key={k} style={{fontSize:11,color:"#ef4444"}}>⚠ {k}: {v}</span>
+          ))}
+          <Btn onClick={loadAll} accent={t.accent} disabled={loading}>🔄 Refresh</Btn>
+          <button onClick={()=>setDark(d=>!d)} style={{background:t.accentSoft,border:"none",borderRadius:10,padding:"6px 12px",cursor:"pointer",fontSize:16}}>{dark?"☀️":"🌙"}</button>
+        </div>
+      </div>
+      <div style={{maxWidth:1000,margin:"0 auto",padding:"20px 20px 0"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14,marginBottom:20}}>
+          {[
+            {label:"Total Participants",value:totalP,icon:"👥"},
+            {label:"Checks Completed",value:totalC,icon:"✅"},
+            {label:"Classes Loaded",value:Object.values(tables).filter(Boolean).length,icon:"📋"},
+          ].map(({label,value,icon})=>(
+            <div key={label} style={{background:t.card,border:`1px solid ${t.cardBorder}`,borderRadius:16,padding:"14px 18px",boxShadow:t.shadow,display:"flex",alignItems:"center",gap:12}}>
+              <span style={{fontSize:24}}>{icon}</span>
+              <div>
+                <div style={{fontSize:22,fontWeight:800,color:t.accent}}>{loading?"…":value}</div>
+                <div style={{fontSize:12,color:t.sub,fontWeight:500}}>{label}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>
+          {TABS.map(name=>(
+            <button key={name} onClick={()=>setActiveTab(name)}
+              style={{padding:"9px 22px",borderRadius:12,border:`2px solid ${activeTab===name?t.accent:t.cardBorder}`,
+                background:activeTab===name?t.accent:"transparent",color:activeTab===name?"#fff":t.text,
+                fontWeight:700,fontSize:13,cursor:"pointer",transition:"all .18s"}}>
+              {name} {tables[name]?`(${tables[name].rows.length})`:loading?"⏳":errors[name]?"⚠":"—"}
+            </button>
+          ))}
+        </div>
+        {loading?(
+          <div style={{textAlign:"center",padding:"60px 0",color:t.sub}}>
+            <div style={{fontSize:40,marginBottom:12}}>⏳</div>
+            <div style={{fontSize:16,fontWeight:600,color:t.text}}>Loading from Google Sheets…</div>
+            <div style={{fontSize:13,marginTop:4}}>Reading SMART LEAD & SMART BUILD</div>
+            <div style={{width:200,height:6,background:t.cardBorder,borderRadius:99,overflow:"hidden",margin:"16px auto 0"}}>
+              <div style={{width:"70%",height:"100%",background:t.accent,borderRadius:99}}/>
+            </div>
+          </div>
+        ):!activeTable?(
+          <div style={{textAlign:"center",padding:"40px 0",color:t.sub}}>
+            <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
+            <div style={{fontWeight:600,color:"#ef4444"}}>{errors[activeTab]||"No data found"}</div>
+            <div style={{fontSize:12,marginTop:8}}>Make sure the sheet is shared as "Anyone with link can view"</div>
+            <div style={{marginTop:16}}><Btn onClick={loadAll} accent={t.accent}>Try Again</Btn></div>
+          </div>
+        ):(
+          <TableView key={activeTab} table={activeTable} dark={dark}/>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
