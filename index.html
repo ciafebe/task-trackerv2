@@ -262,10 +262,14 @@ function PosterModal({ table, onClose, dark }) {
 
       ctx.strokeStyle=BO; ctx.lineWidth=0.8; ctx.beginPath(); ctx.moveTo(PAD+NW,ry); ctx.lineTo(PAD+NW,ry+RH); ctx.stroke();
 
-      // Stars
+      // Stars + Improvement
       const scx=PAD+NW+20, scy=ry+RH/2;
       ci(scx,scy,14,GL); ctx.fillStyle=GO; ctx.font="bold 14px system-ui"; ctx.textAlign="center"; ctx.fillText("★",scx,scy+5); ctx.textAlign="left";
-      ctx.fillStyle=TD; ctx.font="bold 14px system-ui"; ctx.fillText(row.stars||"—", PAD+NW+38, scy+6);
+      ctx.fillStyle=TD; ctx.font="bold 14px system-ui"; ctx.fillText(row.stars||"—", PAD+NW+38, scy-4);
+      if (row.improvement && row.improvement !== "+0") {
+        ctx.font="bold 10px system-ui"; ctx.fillStyle=G;
+        ctx.fillText(row.improvement, PAD+NW+38, scy+10);
+      }
 
       ctx.strokeStyle=BO; ctx.lineWidth=0.8; ctx.beginPath(); ctx.moveTo(PAD+NW+SW2,ry); ctx.lineTo(PAD+NW+SW2,ry+RH); ctx.stroke();
 
