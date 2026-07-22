@@ -41,26 +41,40 @@ function parseTab(rows, tabName) {
   if (!rows || rows.length < 2) return null;
   const headers = rows[0];
 
-  // Pin to exact column names
-  const latestStarIdx   = headers.findIndex(h => h && h.toString().toUpperCase().trim() === "LATEST TOTAL STARS");
-  const latestImprovIdx = headers.findIndex(h => h && h.toString().toUpperCase().trim() === "LATEST IMPROVEMENT");
-  const anchorIdx       = Math.max(latestStarIdx, latestImprovIdx);
+  // Pin to exact column names (case-insensitive, trimmed)
+  const norm = h => (h||"").toString().toUpperCase().trim();
+  const latestStarIdx   = headers.findIndex(h => norm(h) === "LATEST TOTAL STARS");
+  const latestImprovIdx = headers.findIndex(h => norm(h) === "LATEST IMPROVEMENT");
 
-  // Topic cols: everything after the two pinned columns
-  const topicCols = headers.map((h, i) => ({ h, i })).filter(({ h, i }) =>
-    i > anchorIdx &&
-    h && h.toString().trim() !== "" &&
-    !h.toString().includes("%") &&
-    !/^\d+\/\d+\/\d+/.test(h.toString().trim()) &&
-    h.toString().toUpperCase().trim() !== "LATEST TOTAL STARS" &&
-    h.toString().toUpperCase().trim() !== "LATEST IMPROVEMENT"
-  );
+  // Anchor = the last of the two pinned cols (topics come after both)
+  const anchorIdx = Math.max(latestStarIdx, latestImprovIdx);
+
+  // Skip columns we know are NOT topics
+  const skipPatterns = [
+    h => norm(h) === "LATEST TOTAL STARS",
+    h => norm(h) === "LATEST IMPROVEMENT",
+    h => norm(h).includes("TOTAL STAR"),
+    h => norm(h).includes("IMPROVEMENT"),
+    h => (h||"").toString().includes("%"),
+    h => /^\d+\/\d+\/\d+/.test((h||"").toString().trim()),
+    h => (h||"").toString().trim() === "",
+  ];
+  const isSkip = h => skipPatterns.some(fn => fn(h));
+
+  // Topic cols = after anchor, not skipped
+  const topicCols = headers
+    .map((h, i) => ({ h, i }))
+    .filter(({ h, i }) => i > anchorIdx && !isSkip(h));
 
   const topics = topicCols.map(({ h }) => ({ id: uid(), label: h.toString().trim() }));
 
+  // Data rows: skip empty names, date rows, summary rows
   const dataRows = rows.slice(1).filter(r => {
     const name = (r[0] || "").toString().trim();
-    return name !== "" && !/^\d+\/\d+\/\d+/.test(name) && !/expected/i.test(name) && !/^\d+%$/.test(name);
+    return name !== ""
+      && !/^\d+\/\d+\/\d+/.test(name)
+      && !/expected/i.test(name)
+      && !/^\d+%$/.test(name);
   });
 
   const parsedRows = dataRows.map(r => {
