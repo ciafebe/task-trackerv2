@@ -40,32 +40,32 @@ const today = () => new Date().toLocaleDateString("en-GB",{day:"2-digit",month:"
 function parseTab(rows, tabName) {
   if (!rows || rows.length < 2) return null;
   const headers = rows[0];
-  const starCols   = headers.map((h,i)=>({h,i})).filter(({h})=>h&&h.toUpperCase().includes("TOTAL STAR"));
-  const improvCols = headers.map((h,i)=>({h,i})).filter(({h})=>h&&h.includes("IMPROVEMENT"));
-  const lastImprovIdx = improvCols.length > 0 ? improvCols[improvCols.length-1].i : -1;
+
+  // Pin exactly to LATEST TOTAL STARS and LATEST IMPROVEMENT columns
+  const latestStarIdx  = headers.findIndex(h=>h&&h.toString().toUpperCase().trim()==="LATEST TOTAL STARS");
+  const latestImprovIdx= headers.findIndex(h=>h&&h.toString().toUpperCase().trim()==="LATEST IMPROVEMENT");
+
+  // Topic cols: everything after the last of the two pinned cols that isn't empty / date / %
+  const anchorIdx = Math.max(latestStarIdx, latestImprovIdx);
   const topicCols = headers.map((h,i)=>({h,i})).filter(({h,i})=>
-    i > lastImprovIdx && h && h.trim() !== "" &&
-    !h.includes("%") && !/^\d+\/\d+\/\d+/.test(h.trim()) &&
-    !h.toUpperCase().includes("TOTAL STAR") && !h.includes("IMPROVEMENT")
+    i > anchorIdx && h && h.toString().trim() !== "" &&
+    !h.toString().includes("%") &&
+    !/^\d+\/\d+\/\d+/.test(h.toString().trim()) &&
+    h.toString().toUpperCase().trim() !== "LATEST TOTAL STARS" &&
+    h.toString().toUpperCase().trim() !== "LATEST IMPROVEMENT"
   );
+
   const topics = topicCols.map(({h})=>({id:uid(),label:h.toString().trim()}));
+
   const dataRows = rows.slice(1).filter(r=>{
     const name=(r[0]||"").toString().trim();
     return name!==""&&!/^\d+\/\d+\/\d+/.test(name)&&!/expected/i.test(name)&&!/^\d+%$/.test(name);
   });
+
   const parsedRows = dataRows.map(r=>{
     const name=(r[0]||"").toString().trim();
-    let latestStars="";
-    for(let i=starCols.length-1;i>=0;i--){
-      const val=(r[starCols[i].i]||"").toString().trim();
-      if(val!==""&&!isNaN(Number(val))){latestStars=val;break;}
-    }
-    let latestImprov="";
-    for(let i=improvCols.length-1;i>=0;i--){
-      const raw=(r[improvCols[i].i]||"").toString().trim();
-      const clean=raw.replace(/[^+\-\d]/g,"");
-      if(clean&&clean!=="+0"&&clean!=="0"&&clean!=="-0"){latestImprov=raw;break;}
-    }
+    const latestStars = latestStarIdx>=0 ? (r[latestStarIdx]||"").toString().trim() : "";
+    const latestImprov= latestImprovIdx>=0 ? (r[latestImprovIdx]||"").toString().trim() : "";
     const checks={};
     topicCols.forEach(({i},j)=>{
       const val=(r[i]||"").toString().trim().toLowerCase();
@@ -73,9 +73,10 @@ function parseTab(rows, tabName) {
     });
     return {id:uid(),name,stars:latestStars,improvement:latestImprov,checks};
   });
+
   return {
     id:tabName, title:tabName, createdAt:today(), topics, rows:parsedRows,
-    latestWeek:starCols.length>0?starCols[starCols.length-1].h:"",
+    latestStarCol: latestStarIdx>=0 ? headers[latestStarIdx] : "",
   };
 }
 
@@ -167,7 +168,7 @@ function PosterModal({table,onClose,dark}) {
     rr(PAD,TT,W-PAD*2,TH,18,B);ctx.fillStyle=B;ctx.fillRect(PAD,TT+TH-18,W-PAD*2,18);
     sh(6,"rgba(0,0,0,0.2)");ci(PAD+30,TT+26,16,W2);ns();
     ctx.fillStyle=GO;ctx.font="bold 16px system-ui";ctx.textAlign="center";ctx.fillText("★",PAD+30,TT+32);ctx.textAlign="left";
-    ctx.fillStyle=W2;ctx.font="bold 14px system-ui";ctx.fillText(`PROGRESS TRACKER — ${table.title}`,PAD+54,TT+30);
+    ctx.fillStyle=W2;ctx.font="bold 14px system-ui";const ttl=tr(`PROGRESS TRACKER — ${table.title}`,W-PAD*2-120,"bold 14px system-ui");ctx.fillText(ttl,PAD+54,TT+30);
     const lgx=W-PAD-230;ck(lgx+10,TT+26,10,true);ctx.fillStyle=TD;ctx.font="13px system-ui";ctx.fillText("Completed",lgx+24,TT+31);ck(lgx+120,TT+26,10,false);ctx.fillText("Not Yet",lgx+134,TT+31);
     const NW=170,SW2=100,TAX=PAD+NW+SW2,TAW=W-PAD*2-NW-SW2;
     const CW=tc>0?TAW/tc:0,CHY=TT+TH;
@@ -183,9 +184,17 @@ function PosterModal({table,onClose,dark}) {
         ctx.fillStyle="#1c912c";ctx.fillRect(tx,CHY+22,CW-(j<tc-1?1:0),CHH-22);
         if(j<tc-1){ctx.fillStyle="rgba(255,255,255,0.3)";ctx.fillRect(tx+CW-1,CHY+22,1,CHH-22);}
         ctx.fillStyle=W2;ctx.font="bold 10px system-ui";ctx.textAlign="center";
-        const words=tp.label.split(" ");const l1=words.slice(0,2).join(" "),l2=words.slice(2).join(" ");
-        ctx.fillText(tr(l1,CW-8,"bold 10px system-ui"),tx+CW/2,CHY+35);
-        if(l2)ctx.fillText(tr(l2,CW-8,"bold 10px system-ui"),tx+CW/2,CHY+50);
+        // wrap topic label into lines of max CW-8 width
+        const twords=tp.label.split(" ");
+        const tlines=[];let cur="";
+        twords.forEach(w=>{
+          const test=cur?cur+" "+w:w;
+          if(ctx.measureText(test).width>CW-10&&cur){tlines.push(cur);cur=w;}
+          else cur=test;
+        });
+        if(cur)tlines.push(cur);
+        const lineH=13, startY=CHY+22+(CHH-22)/2-(tlines.length*lineH)/2+10;
+        tlines.forEach((ln,li)=>ctx.fillText(ln,tx+CW/2,startY+li*lineH));
         ctx.textAlign="left";
       });
     }
@@ -195,7 +204,14 @@ function PosterModal({table,onClose,dark}) {
       if(i%2===0){ctx.fillStyle="#f9fafb";ctx.fillRect(PAD+1,ry,W-PAD*2-2,RH);}
       ctx.strokeStyle=BO;ctx.lineWidth=0.8;ctx.beginPath();ctx.moveTo(PAD,ry+RH);ctx.lineTo(W-PAD,ry+RH);ctx.stroke();
       ci(PAD+26,ry+RH/2,18,AC[i%5]);ctx.fillStyle=AT[i%5];ctx.font="bold 13px system-ui";ctx.textAlign="center";ctx.fillText((row.name||"?")[0].toUpperCase(),PAD+26,ry+RH/2+5);ctx.textAlign="left";
-      ctx.fillStyle=TD;ctx.font="bold 13px system-ui";ctx.fillText(tr(row.name||"—",NW-62,"bold 13px system-ui"),PAD+50,ry+RH/2+5);
+      // wrap name into up to 2 lines
+      ctx.fillStyle=TD;ctx.font="bold 13px system-ui";
+      const nwords=(row.name||"—").split(" ");const nlines=[];let ncur="";
+      nwords.forEach(w=>{const t2=ncur?ncur+" "+w:w;if(ctx.measureText(t2).width>NW-62&&ncur){nlines.push(ncur);ncur=w;}else ncur=t2;});
+      if(ncur)nlines.push(ncur);
+      const nl=nlines.slice(0,2);
+      if(nl.length===1)ctx.fillText(nl[0],PAD+50,ry+RH/2+5);
+      else{ctx.fillText(nl[0],PAD+50,ry+RH/2-4);ctx.fillText(nl[1],PAD+50,ry+RH/2+10);}
       ctx.strokeStyle=BO;ctx.lineWidth=0.8;ctx.beginPath();ctx.moveTo(PAD+NW,ry);ctx.lineTo(PAD+NW,ry+RH);ctx.stroke();
       const scx=PAD+NW+20,scy=ry+RH/2;
       ci(scx,scy,14,GL);ctx.fillStyle=GO;ctx.font="bold 14px system-ui";ctx.textAlign="center";ctx.fillText("★",scx,scy+5);ctx.textAlign="left";
@@ -242,6 +258,7 @@ function TableView({table,dark}) {
   const filtered=sorted.filter(r=>r.name.toLowerCase().includes(searchQ.toLowerCase()));
   const top3=sorted.filter(r=>r.name&&Number(r.stars)>0).slice(0,3);
   const th={color:t.sub,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",padding:"8px 10px",whiteSpace:"nowrap"};
+  const thWrap={color:t.sub,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",padding:"6px 8px",whiteSpace:"normal",wordBreak:"break-word",maxWidth:110,lineHeight:"1.3"};
   const td={padding:"7px 10px",verticalAlign:"middle"};
   return(
     <div style={{background:t.card,borderRadius:20,border:`1px solid ${t.cardBorder}`,boxShadow:t.shadow,marginBottom:24,overflow:"hidden"}}>
@@ -250,7 +267,7 @@ function TableView({table,dark}) {
           <div>
             <div style={{fontSize:18,fontWeight:800,color:t.text}}>{table.title}</div>
             <div style={{fontSize:12,color:t.sub,marginTop:3}}>
-              {table.rows.length} participants · Latest: <strong>{table.latestWeek||"—"}</strong> · {table.topics.length} topics
+              {table.rows.length} participants · Latest stars from: <strong>{table.latestStarCol||"—"}</strong> · {table.topics.length} topics
             </div>
           </div>
           <Btn onClick={()=>setPoster(true)} accent={t.accent}>🎨 Generate Poster</Btn>
@@ -288,9 +305,9 @@ function TableView({table,dark}) {
               <tr style={{borderBottom:`2px solid ${t.topicBorder}`}}>
                 <th colSpan={4}/>
                 {table.topics.map((tp,i)=>(
-                  <th key={tp.id} style={{...th,background:t.topicBg,textAlign:"center",minWidth:100,fontSize:10,
+                  <th key={tp.id} style={{...thWrap,background:t.topicBg,textAlign:"center",minWidth:100,
                     borderLeft:i===0?`2px solid ${t.topicBorder}`:`1px solid ${t.cardBorder}`,
-                    borderRight:i===table.topics.length-1?`2px solid ${t.topicBorder}`:"none",padding:"6px 8px"}}>
+                    borderRight:i===table.topics.length-1?`2px solid ${t.topicBorder}`:"none"}}>
                     {tp.label}
                   </th>
                 ))}
@@ -308,7 +325,7 @@ function TableView({table,dark}) {
                 onMouseEnter={e=>e.currentTarget.style.background=t.rowHover}
                 onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                 <td style={{...td,color:t.sub,fontSize:12,textAlign:"center"}}>{i+1}</td>
-                <td style={td}><div style={{fontWeight:600,fontSize:14,color:t.text}}>{row.name}</div></td>
+                <td style={{...td,minWidth:160}}><div style={{fontWeight:600,fontSize:14,color:t.text,whiteSpace:"normal",wordBreak:"break-word"}}>{row.name}</div></td>
                 <td style={{...td,textAlign:"center"}}>
                   <span style={{background:t.starBg,color:t.star,fontWeight:700,fontSize:13,borderRadius:8,padding:"3px 10px"}}>{row.stars||"—"}</span>
                 </td>
