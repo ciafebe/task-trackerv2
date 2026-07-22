@@ -138,7 +138,7 @@ function PosterModal({ table, onClose, dark }) {
   const draw = useCallback(() => {
     const c = canvasRef.current; if (!c) return;
     const ctx = c.getContext("2d");
-    const sorted = [...table.rows].sort((a,b) => (Number(b.stars)||0) - (Number(a.stars)||0));
+    const sorted = [...table.rows].sort((a,b) => (Number((b.improvement||"").replace(/[^0-9\-]/g,""))||0) - (Number((a.improvement||"").replace(/[^0-9\-]/g,""))||0));
     const rc = sorted.length, tc = table.topics.length;
     const PAD=24, W=900, SH=110, TH=52, CHH=tc>0?80:44, RH=62, FH=56, TP=28, SG=14;
     const TT=TP+SH+24, RT=TT+TH+CHH;
@@ -181,7 +181,8 @@ function PosterModal({ table, onClose, dark }) {
     ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
 
     // Stat cards
-    const topPerf = sorted.find(r=>r.name&&Number(r.stars)>0);
+    const impNum2 = r => Number((r.improvement||"").replace(/[^0-9\-]/g,""))||0;
+    const topPerf = sorted.find(r=>r.name&&impNum2(r)>0);
     const ts  = sorted.reduce((s,r)=>s+(Number(r.stars)||0),0);
     const tch = sorted.reduce((s,r)=>s+Object.values(r.checks||{}).filter(Boolean).length,0);
     const mc  = rc*tc, pd = mc>0?Math.round(tch/mc*100):0;
@@ -265,10 +266,10 @@ function PosterModal({ table, onClose, dark }) {
       // Stars + Improvement
       const scx=PAD+NW+20, scy=ry+RH/2;
       ci(scx,scy,14,GL); ctx.fillStyle=GO; ctx.font="bold 14px system-ui"; ctx.textAlign="center"; ctx.fillText("★",scx,scy+5); ctx.textAlign="left";
-      ctx.fillStyle=TD; ctx.font="bold 14px system-ui"; ctx.fillText(row.stars||"—", PAD+NW+38, scy-4);
+      ctx.fillStyle=TD; ctx.font="11px system-ui"; ctx.fillText(row.stars||"—", PAD+NW+38, scy-4);
       if (row.improvement && row.improvement !== "+0") {
-        ctx.font="bold 10px system-ui"; ctx.fillStyle=G;
-        ctx.fillText(row.improvement, PAD+NW+38, scy+10);
+        ctx.font="bold 16px system-ui"; ctx.fillStyle=G;
+        ctx.fillText(row.improvement, PAD+NW+38, scy+12);
       }
 
       ctx.strokeStyle=BO; ctx.lineWidth=0.8; ctx.beginPath(); ctx.moveTo(PAD+NW+SW2,ry); ctx.lineTo(PAD+NW+SW2,ry+RH); ctx.stroke();
@@ -321,9 +322,10 @@ function TableView({ table, dark }) {
   const totalC = table.rows.reduce((s,r) => s+Object.values(r.checks||{}).filter(Boolean).length, 0);
   const maxC   = table.rows.length * table.topics.length;
   const pct    = maxC ? Math.round(totalC/maxC*100) : 0;
-  const sorted = [...table.rows].sort((a,b) => (Number(b.stars)||0)-(Number(a.stars)||0));
+  const impNum = r => Number((r.improvement||"").replace(/[^0-9\-]/g,""))||0;
+  const sorted = [...table.rows].sort((a,b) => impNum(b) - impNum(a));
   const filtered = sorted.filter(r => r.name.toLowerCase().includes(searchQ.toLowerCase()));
-  const top3   = sorted.filter(r => r.name && Number(r.stars)>0).slice(0,3);
+  const top3   = sorted.filter(r => r.name && impNum(r)>0).slice(0,3);
 
   const thBase = { color:t.sub, fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.06em", padding:"8px 10px", whiteSpace:"nowrap" };
   const thWrap = { color:t.sub, fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.06em", padding:"6px 8px", whiteSpace:"normal", wordBreak:"break-word", maxWidth:120, lineHeight:"1.4", textAlign:"center" };
